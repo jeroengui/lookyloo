@@ -16,7 +16,7 @@ import time
 
 from collections import OrderedDict
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import _CacheInfo as CacheInfo
 from logging import LoggerAdapter
 from pathlib import Path
@@ -24,6 +24,7 @@ from typing import Any
 from collections.abc import MutableMapping, Iterator
 
 import dns.rdatatype
+
 from dns.resolver import Cache
 from dns.asyncresolver import Resolver
 from har2tree import CrawledTree, Har2TreeError, HarFile
@@ -32,9 +33,11 @@ from pyipasnhistory import IPASNHistory  # type: ignore[attr-defined]
 from redis import Redis
 
 from .context import Context
-from .helpers import get_captures_dir, is_locked, load_pickle_tree, get_pickle_path, remove_pickle_tree, get_indexing, mimetype_to_generic
+from .helpers import (get_captures_dir, is_locked, load_pickle_tree, get_pickle_path,
+                      remove_pickle_tree, get_indexing, mimetype_to_generic, CaptureSettings,
+                      global_proxy_for_requests, get_useragent_for_requests)
 from .default import LookylooException, try_make_file, get_config
-from .exceptions import MissingCaptureDirectory, NoValidHarFile, MissingUUID, TreeNeedsRebuild
+from .exceptions import MissingCaptureDirectory, NoValidHarFile, MissingUUID, TreeNeedsRebuild, InvalidCaptureSetting
 from .modules import Cloudflare
 
 
@@ -46,6 +49,14 @@ class LookylooCacheLogAdapter(LoggerAdapter):  # type: ignore[type-arg]
         if self.extra:
             return '[{}] {}'.format(self.extra['uuid'], msg), kwargs
         return msg, kwargs
+
+
+def safe_make_datetime(dt: str) -> datetime:
+    try:
+        return datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S.%f%z')
+    except ValueError:
+        # If the microsecond is missing (0), it fails
+        return datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S%z')
 
 
 class CaptureCache():
@@ -80,11 +91,10 @@ class CaptureCache():
             self.title: str = cache_entry['title']
 
         if cache_entry.get('timestamp'):
-            try:
-                self.timestamp: datetime = datetime.strptime(cache_entry['timestamp'], '%Y-%m-%dT%H:%M:%S.%f%z')
-            except ValueError:
-                # If the microsecond is missing (0), it fails
-                self.timestamp = datetime.strptime(cache_entry['timestamp'], '%Y-%m-%dT%H:%M:%S%z')
+            if isinstance(cache_entry['timestamp'], str):
+                self.timestamp: datetime = safe_make_datetime(cache_entry['timestamp'])
+            elif isinstance(cache_entry['timestamp'], datetime):
+                self.timestamp = cache_entry['timestamp']
 
         self.redirects: list[str] = json.loads(cache_entry['redirects']) if cache_entry.get('redirects') else []
 
@@ -95,6 +105,17 @@ class CaptureCache():
         self.parent: str | None = cache_entry.get('parent')
         self.user_agent: str | None = cache_entry.get('user_agent')
         self.referer: str | None = cache_entry.get('referer')
+
+    def search(self, query: str) -> bool:
+        if self.title and query in self.title:
+            return True
+        if self.url and query in self.url:
+            return True
+        if self.referer and query in self.referer:
+            return True
+        if self.redirects and any(query in redirect for redirect in self.redirects):
+            return True
+        return False
 
     @property
     def tree_ready(self) -> bool:
@@ -107,6 +128,31 @@ class CaptureCache():
         while is_locked(self.capture_dir):
             time.sleep(5)
         return load_pickle_tree(self.capture_dir, self.capture_dir.stat().st_mtime, self.logger)
+
+    @property
+    def categories(self) -> set[str]:
+        categ_file = self.capture_dir / 'categories'
+        if categ_file.exists():
+            with categ_file.open() as f:
+                return {line.strip() for line in f.readlines()}
+        return set()
+
+    @categories.setter
+    def categories(self, categories: set[str]) -> None:
+        categ_file = self.capture_dir / 'categories'
+        with categ_file.open('w') as f:
+            f.write('\n'.join(categories))
+
+    @property
+    def capture_settings(self) -> CaptureSettings | None:
+        capture_settings_file = self.capture_dir / 'capture_settings.json'
+        if capture_settings_file.exists():
+            try:
+                with capture_settings_file.open() as f:
+                    return CaptureSettings(**json.load(f))
+            except InvalidCaptureSetting as e:
+                self.logger.warning(f'[In file!] Invalid capture settings for {self.uuid}: {e}')
+        return None
 
 
 def serialize_sets(obj: Any) -> Any:
@@ -125,7 +171,6 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
         self.contextualizer = contextualizer
         self.__cache_max_size = maxsize
         self.__cache: dict[str, CaptureCache] = OrderedDict()
-        self._quick_init()
         self.timeout = get_config('generic', 'max_tree_create_time')
 
         self.psl = PublicSuffixList()
@@ -137,15 +182,23 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                             dns.rdatatype.RdataType.SOA, dns.rdatatype.RdataType.NS,
                             dns.rdatatype.RdataType.MX]
 
-        try:
-            self.ipasnhistory: IPASNHistory | None = IPASNHistory()
-            if not self.ipasnhistory.is_up:
+        ipasnhistory_config = get_config('modules', 'IPASNHistory')
+        self.ipasnhistory: IPASNHistory | None = None
+        if ipasnhistory_config.get('enabled'):
+            try:
+                self.ipasnhistory = IPASNHistory(ipasnhistory_config['url'],
+                                                 useragent=get_useragent_for_requests(),
+                                                 proxies=global_proxy_for_requests())
+                if not self.ipasnhistory.is_up:
+                    self.ipasnhistory = None
+                self.logger.info('IPASN History ready')
+            except Exception as e:
+                # Unable to setup IPASN History
+                self.logger.warning(f'Unable to setup IPASN History: {e}')
                 self.ipasnhistory = None
-            self.logger.info('IPASN History ready')
-        except Exception as e:
-            # Unable to setup IPASN History
-            self.logger.warning(f'Unable to setup IPASN History: {e}')
-            self.ipasnhistory = None
+        else:
+            self.logger.info('IPASN History disabled')
+
         self.cloudflare: Cloudflare = Cloudflare()
         if not self.cloudflare.available:
             self.logger.warning('Unable to setup Cloudflare.')
@@ -204,44 +257,22 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
     def lru_cache_clear(self) -> None:
         load_pickle_tree.cache_clear()
 
-    def uuid_exists(self, uuid: str) -> bool:
-        if uuid in self.__cache:
-            return True
-        if self.redis.hexists('lookup_dirs', uuid):
-            return True
-        if self.redis.hexists('lookup_dirs_archived', uuid):
-            return True
-        return False
-
-    def _quick_init(self) -> None:
-        '''Initialize the cache with a list of UUIDs, with less back and forth with redis.
-        Only get recent captures.'''
-        if self.__cache_max_size is not None:
-            self.logger.info('Cache max size set, skip quick init.')
-            return None
-        p = self.redis.pipeline()
-        has_new_cached_captures = False
-        recent_captures: dict[str, float] = {}
-        for uuid, directory in self.redis.hscan_iter('lookup_dirs'):
-            if uuid in self.__cache:
-                continue
-            has_new_cached_captures = True
-            p.hgetall(directory)
-        if not has_new_cached_captures:
-            return
-        for cache in p.execute():
-            if not cache:
-                continue
-            try:
-                cc = CaptureCache(cache)
-            except LookylooException as e:
-                self.logger.warning(f'Unable to initialize the cache: {e}')
-                continue
-            self.__cache[cc.uuid] = cc
-            if hasattr(cc, 'timestamp'):
-                recent_captures[cc.uuid] = cc.timestamp.timestamp()
-        if recent_captures:
-            self.redis.zadd('recent_captures', mapping=recent_captures, nx=True)  # type: ignore[arg-type]
+    def get_capture_cache_quick(self, uuid: str) -> CaptureCache | None:
+        """Get the CaptureCache for the UUID if it exists in redis,
+        WARNING: it doesn't check if the path exists, nor if the pickle is there
+        """
+        logger = LookylooCacheLogAdapter(self.logger, {'uuid': uuid})
+        if uuid in self.cached_captures:
+            return self.__cache[uuid]
+        try:
+            capture_dir = self._get_capture_dir(uuid)
+            if cached := self.redis.hgetall(capture_dir):
+                return CaptureCache(cached)
+        except MissingUUID as e:
+            logger.warning(f'Unable to get CaptureCache: {e}')
+        except Exception as e:
+            logger.error(f'Unable to get CaptureCache: {e}')
+        return None
 
     def _get_capture_dir(self, uuid: str) -> str:
         # Try to get from the recent captures cache in redis
@@ -250,9 +281,12 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
             if os.path.exists(capture_dir):
                 return capture_dir
             # The capture was either removed or archived, cleaning up
-            self.redis.hdel('lookup_dirs', uuid)
-            self.redis.zrem('recent_captures', uuid)
-            self.redis.delete(capture_dir)
+            p = self.redis.pipeline()
+            p.hdel('lookup_dirs', uuid)
+            p.zrem('recent_captures', uuid)
+            p.zrem('recent_captures_public', uuid)
+            p.delete(capture_dir)
+            p.execute()
 
         # Try to get from the archived captures cache in redis
         capture_dir = self.redis.hget('lookup_dirs_archived', uuid)
@@ -264,7 +298,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
             self.redis.delete(capture_dir)
             self.logger.warning(f'UUID ({uuid}) linked to a missing directory ({capture_dir}).')
             raise MissingCaptureDirectory(f'UUID ({uuid}) linked to a missing directory ({capture_dir}).')
-        raise MissingUUID(f'Unable to find UUID {uuid}.')
+        raise MissingUUID(f'Unable to find UUID "{uuid}".')
 
     def _prepare_hostnode_tree_for_icons(self, tree: CrawledTree) -> None:
         for node in tree.root_hartree.hostname_tree.traverse():
@@ -275,6 +309,16 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                         node.add_feature(generic_type, 1)
                     else:
                         node.add_feature(generic_type, getattr(node, generic_type) + 1)
+                if 'posted_data' in url.features:
+                    if 'posted_data' not in node.features:
+                        node.add_feature('posted_data', 1)
+                    else:
+                        node.posted_data += 1
+                if 'iframe' in url.features:
+                    if 'iframe' not in node.features:
+                        node.add_feature('iframe', 1)
+                    else:
+                        node.iframe += 1
                 if 'redirect' in url.features:
                     if 'redirect' not in node.features:
                         node.add_feature('redirect', 1)
@@ -287,6 +331,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                         node.redirect_to_nothing += 1
 
     async def _create_pickle(self, capture_dir: Path, logger: LookylooCacheLogAdapter) -> CrawledTree:
+        logger.debug(f'Creating pickle for {capture_dir}')
         with (capture_dir / 'uuid').open() as f:
             uuid = f.read().strip()
 
@@ -319,19 +364,23 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
             # unable to use the HAR files, get them out of the way
             for har_file in har_files:
                 har_file.rename(har_file.with_suffix('.broken'))
+            logger.debug(f'We got HAR files, but they are broken: {e}')
             raise NoValidHarFile(f'We got har files, but they are broken: {e}')
         except TimeoutError:
-            logger.warning(f'Unable to rebuild the tree for {capture_dir}, the tree took too long.')
             for har_file in har_files:
                 har_file.rename(har_file.with_suffix('.broken'))
+            logger.warning(f'Unable to rebuild the tree for {capture_dir}, the tree took more than {self.timeout}s.')
             raise NoValidHarFile(f'We got har files, but creating a tree took more than {self.timeout}s.')
         except RecursionError as e:
-            raise NoValidHarFile(f'Tree too deep, probably a recursive refresh: {e}.\n Append /export to the URL to get the files.')
+            for har_file in har_files:
+                har_file.rename(har_file.with_suffix('.broken'))
+            logger.debug(f'Tree too deep, probably a recursive refresh: {e}.')
+            raise NoValidHarFile(f'Tree too deep, probably a recursive refresh: {e}.')
         else:
             # Some pickles require a pretty high recursion limit, this kindof fixes it.
             # If the capture is really broken (generally a refresh to self), the capture
             # is discarded in the RecursionError above.
-            sys.setrecursionlimit(int(default_recursion_limit * 2))
+            sys.setrecursionlimit(int(default_recursion_limit * 10))
             try:
                 with gzip.open(capture_dir / 'tree.pickle.gz', 'wb') as _p:
                     _p.write(pickletools.optimize(pickle.dumps(tree, protocol=5)))
@@ -341,6 +390,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                 for har_file in har_files:
                     har_file.rename(har_file.with_suffix('.broken'))
                 (capture_dir / 'tree.pickle.gz').unlink(missing_ok=True)
+                logger.debug(f'Tree too deep, probably a recursive refresh: {e}.')
                 raise NoValidHarFile(f'Tree too deep, probably a recursive refresh: {e}.\n Append /export to the URL to get the files.')
             except Exception:
                 (capture_dir / 'tree.pickle.gz').unlink(missing_ok=True)
@@ -348,6 +398,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
         finally:
             sys.setrecursionlimit(default_recursion_limit)
             lock_file.unlink(missing_ok=True)
+        logger.debug(f'Pickle for {capture_dir} created.')
         return tree
 
     @staticmethod
@@ -380,12 +431,17 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
             if not os.listdir(capture_dir_str):
                 # The directory is empty, removing it
                 os.rmdir(capture_dir_str)
+                self.logger.warning(f'Empty directory: {capture_dir_str}')
                 raise MissingCaptureDirectory(f'Empty directory: {capture_dir_str}')
+            self.logger.warning(f'Unable to find the UUID file in {capture_dir}.')
             raise MissingCaptureDirectory(f'Unable to find the UUID file in {capture_dir}.')
 
+        cache: dict[str, str | int] = {'uuid': uuid, 'capture_dir': capture_dir_str}
         logger = LookylooCacheLogAdapter(self.logger, {'uuid': uuid})
         try:
+            logger.debug('Trying to load the tree.')
             tree = load_pickle_tree(capture_dir, capture_dir.stat().st_mtime, logger)
+            logger.debug('Successfully loaded the tree.')
         except NoValidHarFile:
             logger.debug('Unable to rebuild the tree, the HAR files are broken.')
         except TreeNeedsRebuild:
@@ -396,11 +452,10 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                 get_indexing().force_reindex(uuid)
                 if get_config('generic', 'index_everything'):
                     get_indexing(full=True).force_reindex(uuid)
-            except NoValidHarFile:
-                logger.warning(f'Unable to rebuild the tree for {capture_dir}, the HAR files are broken.')
+            except NoValidHarFile as e:
+                logger.warning(f'Unable to rebuild the tree for {capture_dir}, the HAR files are not usable: {e}.')
                 tree = None
-
-        cache: dict[str, str | int] = {'uuid': uuid, 'capture_dir': capture_dir_str}
+                cache['error'] = f'Unable to rebuild the tree for {uuid}, the HAR files are not usable: {e}'
 
         capture_settings_file = capture_dir / 'capture_settings.json'
         if capture_settings_file.exists():
@@ -455,6 +510,8 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
         if (cache.get('error')
                 and isinstance(cache['error'], str)
                 and 'HTTP Error' not in cache['error']
+                and 'Unable to resolve' not in cache['error']
+                and 'Capturing ressources on private IPs' not in cache['error']
                 and "No har files in" not in cache['error']):
             logger.info(cache['error'])
 
@@ -476,8 +533,20 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
 
         p.delete(capture_dir_str)
         p.hset(capture_dir_str, mapping=cache)  # type: ignore[arg-type]
+        # NOTE: just expire it from redis after it's not on the index anymore.
+        # Avoids to have an evergrowing cache.
+        time_delta_on_index = timedelta(**get_config('generic', 'time_delta_on_index'))
+        p.expire(capture_dir_str, int(time_delta_on_index.total_seconds()) * 2)
+
+        to_return = CaptureCache(cache)
+        if hasattr(to_return, 'timestamp') and to_return.timestamp:
+            p.zadd('recent_captures', {uuid: to_return.timestamp.timestamp()})
+            if not to_return.no_index:
+                # public capture
+                p.zadd('recent_captures_public', {uuid: to_return.timestamp.timestamp()})
+
         p.execute()
-        return CaptureCache(cache)
+        return to_return
 
     async def __resolve_dns(self, ct: CrawledTree, logger: LookylooCacheLogAdapter) -> None:
         '''Resolves all domains of the tree, keeps A (IPv4), AAAA (IPv6), and CNAME entries
@@ -507,7 +576,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                         await self.dnsresolver.resolve(hostname, qt, search=True, raise_on_no_answer=False)
                         await self.dnsresolver.resolve(domain, qt, search=True, raise_on_no_answer=False)
                     except Exception as e:
-                        logger.warning(f'Unable to resolve DNS {hostname} - {qt}: {e}')
+                        logger.info(f'Unable to resolve DNS {hostname} - {qt}: {e}')
 
         cnames_path = ct.root_hartree.har.path.parent / 'cnames.json'
         ips_path = ct.root_hartree.har.path.parent / 'ips.json'
@@ -586,7 +655,10 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
 
         _all_ips = set()
         _all_hostnames: set[str] = {node.name for node in ct.root_hartree.hostname_tree.traverse()
-                                    if not getattr(node, 'hostname_is_ip', False)}
+                                    if (not getattr(node, 'hostname_is_ip', False)
+                                        and node.name
+                                        and not node.name.endswith('onion')
+                                        and not node.name.endswith('i2p'))}
         self.dnsresolver.cache.flush()
         logger.info(f'Resolving DNS: {len(_all_hostnames)} hostnames.')
         semaphore = asyncio.Semaphore(20)
@@ -596,7 +668,8 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
         await asyncio.gather(*all_requests)
         logger.info('Done resolving DNS.')
         for node in ct.root_hartree.hostname_tree.traverse():
-            if 'hostname_is_ip' in node.features and node.hostname_is_ip:
+            if ('hostname_is_ip' in node.features and node.hostname_is_ip
+                    or (node.name and any([node.name.endswith('onion'), node.name.endswith('i2p')]))):
                 continue
             domain = self.psl.privatesuffix(node.name)
 
@@ -648,7 +721,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                     # Should only have one
                     break
             except Exception as e:
-                logger.warning(f'[SOA record] Unable to resolve: {e}')
+                logger.info(f'[SOA record] Unable to resolve: {e}')
 
             # NS, and MX records that may not be in the response for the hostname
             # trigger the request on domains if needed.
@@ -663,10 +736,10 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                     logger.debug(f'No MX record for {domain}.')
                     mx_response = None
                 except Exception as e:
-                    logger.warning(f'[MX record] Unable to resolve: {e}')
+                    logger.info(f'[MX record] Unable to resolve: {e}')
                     mx_response = None
             except Exception as e:
-                logger.warning(f'[MX record] Unable to resolve: {e}')
+                logger.info(f'[MX record] Unable to resolve: {e}')
                 mx_response = None
 
             if mx_response:
@@ -681,7 +754,7 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                         node.add_feature('mx', (name_to_cache, host_mx[name_to_cache]))
                         break
                     except Exception as e:
-                        logger.warning(f'[MX record] broken: {e}')
+                        logger.info(f'[MX record] broken: {e}')
 
             # We must always have a NS record, otherwise, we couldn't resolve.
             # Let's keep trying removing the first part of the hostname until we get an answer.
@@ -702,11 +775,11 @@ class CapturesIndex(Mapping):  # type: ignore[type-arg]
                         to_query = to_query[to_query.index('.') + 1:]
                         continue
                     except Exception as e:
-                        logger.warning(f'[NS record] Unable to resolve: {e}')
+                        logger.info(f'[NS record] Unable to resolve: {e}')
                         ns_response = None
                         break
             except Exception as e:
-                logger.warning(f'[NS record] Unable to resolve: {e}')
+                logger.info(f'[NS record] Unable to resolve: {e}')
                 ns_response = None
 
             if ns_response:

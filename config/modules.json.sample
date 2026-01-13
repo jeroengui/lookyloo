@@ -1,4 +1,17 @@
 {
+  "AssemblyLine": {
+    "apikey": null,
+    "username": null,
+    "url": "https://malware.cyber.gc.ca",
+    "submission_profile": "static_with_internet",
+    "classification": "TLP:C",
+    "notification_queue": "lookyloo",
+    "services": {"excluded": ["CyberDeck", "Dynamic Analysis"]},
+    "priority": 1,
+    "autosubmit": false,
+    "allow_auto_trigger": false,
+    "admin_only": true
+  },
   "VirusTotal": {
     "apikey": null,
     "trustenv": false,
@@ -24,6 +37,16 @@
     "allow_auto_trigger": false,
     "admin_only": false
   },
+  "AIL": {
+    "enabled": false,
+    "url": "http://MyAIL:7000",
+    "apikey": null,
+    "timeout": 10,
+    "autosubmit": false,
+    "allow_auto_trigger": false,
+    "admin_only": true,
+    "verify_tls_cert": true
+  },
   "SaneJS": {
     "enabled": true,
     "allow_auto_trigger": true,
@@ -43,6 +66,7 @@
           "source:lookyloo"
         ],
         "auto_publish": false,
+        "auto_push": false,
         "allow_auto_trigger": false,
         "admin_only": true
       }
@@ -52,8 +76,12 @@
     "enabled": false,
     "ipaddress": "127.0.0.1",
     "port": 4243,
-    "allow_auto_trigger": true,
+    "allow_auto_trigger": false,
     "admin_only": false
+  },
+  "IPASNHistory": {
+    "enabled": false,
+    "url": "https://ipasnhistory.circl.lu/"
   },
   "UrlScan": {
     "apikey": null,
@@ -72,7 +100,8 @@
     "enabled": false,
     "url": "https://urlhaus-api.abuse.ch/v1/",
     "allow_auto_trigger": true,
-    "admin_only": false
+    "admin_only": false,
+    "apikey": null
   },
   "Hashlookup": {
     "enabled": false,
@@ -80,24 +109,22 @@
     "allow_auto_trigger": true,
     "admin_only": false
   },
-  "RiskIQ": {
-    "user": null,
-    "apikey": null,
-    "allow_auto_trigger": false,
-    "default_first_seen_in_days": 5,
-    "admin_only": true
-  },
   "CIRCLPDNS": {
     "user": null,
     "password": null,
     "allow_auto_trigger": true,
     "admin_only": false
   },
+  "Cloudflare": {
+    "enabled": true,
+    "autoupdate": true
+  },
   "_notes": {
     "apikey": "null disables the module. Pass a string otherwise.",
     "autosubmit": "Automatically submits the URL to the 3rd party service.",
     "admin_only": "Querying that module is only allowed to logged-in users (generally because the API keys have limits).",
     "allow_auto_trigger": "Allow auto trigger per module: some (i.e. VT) can be very expensive",
+    "AssemblyLine": "Module to submit URLs to AssemblyLine: https://github.com/CybercentreCanada/assemblyline",
     "VirusTotal": "Module to query Virustotal: https://www.virustotal.com/",
     "PhishingInitiative": "Module to query phishing initiative: https://phishing-initiative.fr/contrib/",
     "SaneJS": "Module to query SaneJS: https://github.com/Lookyloo/sanejs",
@@ -109,7 +136,9 @@
     "Hashlookup": "Module to query Hashlookup (https://github.com/adulau/hashlookup-server). URL set to none means querying the public instance.",
     "FOX": "Submission only interface by and for CCCS",
     "Pandora": "Submission only interface for https://github.com/pandora-analysis/",
-    "RiskIQ": "Module to query RiskIQ (https://community.riskiq.com/)",
-    "CIRCLPDNS": "Module to query CIRCL Passive DNS (https://www.circl.lu/services/passive-dns/)"
+    "CIRCLPDNS": "Module to query CIRCL Passive DNS (https://www.circl.lu/services/passive-dns/)",
+    "AIL": "Module to submit URLs to AIL Framework (https://github.com/CIRCL/AIL-framework)",
+    "IPASNHistory": "Module to query IPASN History (https://ipasnhistory.circl.lu/)",
+    "Cloudflare": "Module to check if an IP is on Cloudflare infrastructure"
   }
 }

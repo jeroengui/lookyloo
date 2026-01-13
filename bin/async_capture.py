@@ -10,11 +10,11 @@ import signal
 from asyncio import Task
 from pathlib import Path
 
-from lacuscore import LacusCore, CaptureStatus as CaptureStatusCore, CaptureResponse as CaptureResponseCore
+from lacuscore import CaptureSettingsError, LacusCore, CaptureResponse as CaptureResponseCore
 from pylacus import PyLacus, CaptureStatus as CaptureStatusPy, CaptureResponse as CaptureResponsePy
 
 from lookyloo import Lookyloo, CaptureSettings
-from lookyloo.exceptions import LacusUnreachable
+from lookyloo.exceptions import LacusUnreachable, DuplicateUUID
 from lookyloo.default import AbstractManager, get_config, LookylooException
 from lookyloo.helpers import get_captures_dir
 
@@ -32,15 +32,18 @@ class AsyncCapture(AbstractManager):
         self.capture_dir: Path = get_captures_dir()
         self.lookyloo = Lookyloo(cache_max_size=1)
 
-        self.captures: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        self.captures: set[asyncio.Task[None]] = set()
 
         self.fox = FOX(config_name='FOX')
         if not self.fox.available:
             self.logger.warning('Unable to setup the FOX module')
 
     async def _trigger_captures(self) -> None:
-        # Only called if LacusCore is used
-        def clear_list_callback(task: Task) -> None:  # type: ignore[type-arg]
+        # Can only be called if LacusCore is used
+        if not isinstance(self.lookyloo.lacus, LacusCore):
+            raise LookylooException('This function can only be called if LacusCore is used.')
+
+        def clear_list_callback(task: Task[None]) -> None:
             self.captures.discard(task)
             self.unset_running()
 
@@ -49,7 +52,7 @@ class AsyncCapture(AbstractManager):
         if max_new_captures <= 0:
             self.logger.info(f'Max amount of captures in parallel reached ({len(self.captures)})')
             return None
-        for capture_task in self.lookyloo.lacus.consume_queue(max_new_captures):  # type: ignore[union-attr]
+        async for capture_task in self.lookyloo.lacus.consume_queue(max_new_captures):
             self.captures.add(capture_task)
             self.set_running()
             capture_task.add_done_callback(clear_list_callback)
@@ -59,7 +62,7 @@ class AsyncCapture(AbstractManager):
         # Only check if the top 50 in the priority list are done, as they are the most likely ones to be
         # and if the list it very very long, iterating over it takes a very long time.
         return [uuid for uuid in self.lookyloo.redis.zrevrangebyscore('to_capture', 'Inf', '-Inf', start=0, num=500)
-                if uuid and self.lookyloo.lacus.get_capture_status(uuid) in [CaptureStatusPy.DONE, CaptureStatusCore.DONE]]
+                if uuid and self.lookyloo.capture_ready_to_store(uuid)]
 
     def process_capture_queue(self) -> None:
         '''Process a query from the capture queue'''
@@ -69,6 +72,12 @@ class AsyncCapture(AbstractManager):
                 entries = self.lookyloo.lacus.get_capture(uuid, decode=True)
             elif isinstance(self.lookyloo.lacus, PyLacus):
                 entries = self.lookyloo.lacus.get_capture(uuid)
+            elif isinstance(self.lookyloo.lacus, dict):
+                for lacus in self.lookyloo.lacus.values():
+                    entries = lacus.get_capture(uuid)
+                    if entries.get('status') != CaptureStatusPy.UNKNOWN:
+                        # Found it.
+                        break
             else:
                 raise LookylooException(f'lacus must be LacusCore or PyLacus, not {type(self.lookyloo.lacus)}.')
             log = f'Got the capture for {uuid} from Lacus'
@@ -76,33 +85,53 @@ class AsyncCapture(AbstractManager):
                 log = f'{log} - Runtime: {runtime}'
             self.logger.info(log)
 
-            self.lookyloo.redis.sadd('ongoing', uuid)
             queue: str | None = self.lookyloo.redis.getdel(f'{uuid}_mgmt')
 
-            to_capture: CaptureSettings | None = self.lookyloo.get_capture_settings(uuid)
-            if not to_capture:
-                continue
+            try:
+                self.lookyloo.redis.sadd('ongoing', uuid)
+                to_capture: CaptureSettings | None = self.lookyloo.get_capture_settings(uuid)
+                if (entries.get('error') is not None
+                        and entries['error'].startswith('No capture settings') and to_capture):  # type: ignore[union-attr]
+                    # The settings were expired too early but we still have them in lookyloo. Re-add to queue.
+                    self.lookyloo.redis.hset(uuid, 'not_queued', 1)
+                    self.lookyloo.redis.zincrby('to_capture', -1, uuid)
+                    self.logger.info(f'Capture settings for {uuid} were expired too early, re-adding to queue.')
+                    continue
+                if to_capture:
+                    self.lookyloo.store_capture(
+                        uuid, to_capture.listing,
+                        os=to_capture.os, browser=to_capture.browser,
+                        parent=to_capture.parent,
+                        downloaded_filename=entries.get('downloaded_filename'),
+                        downloaded_file=entries.get('downloaded_file'),
+                        error=entries.get('error'), har=entries.get('har'),
+                        png=entries.get('png'), html=entries.get('html'),
+                        frames=entries.get('frames'),
+                        last_redirected_url=entries.get('last_redirected_url'),
+                        cookies=entries.get('cookies'),
+                        storage=entries.get('storage'),
+                        capture_settings=to_capture,
+                        potential_favicons=entries.get('potential_favicons'),
+                        trusted_timestamps=entries.get('trusted_timestamps'),
+                        auto_report=to_capture.auto_report,
+                    )
+                else:
+                    self.logger.warning(f'Unable to get capture settings for {uuid}, it expired.')
+                    self.lookyloo.redis.zrem('to_capture', uuid)
+                    continue
 
-            self.lookyloo.store_capture(
-                uuid, to_capture.listing,
-                os=to_capture.os, browser=to_capture.browser,
-                parent=to_capture.parent,
-                downloaded_filename=entries.get('downloaded_filename'),
-                downloaded_file=entries.get('downloaded_file'),
-                error=entries.get('error'), har=entries.get('har'),
-                png=entries.get('png'), html=entries.get('html'),
-                last_redirected_url=entries.get('last_redirected_url'),
-                cookies=entries.get('cookies'),
-                capture_settings=to_capture,
-                potential_favicons=entries.get('potential_favicons'),
-                auto_report=to_capture.auto_report,
-            )
+            except CaptureSettingsError as e:
+                # We shouldn't have a broken capture at this stage, but here we are.
+                self.logger.error(f'Got a capture ({uuid}) with invalid settings: {e}.')
+            except DuplicateUUID as e:
+                self.logger.critical(f'Got a duplicate UUID ({uuid}) it should never happen, and deserves some investigation: {e}.')
+            finally:
+                self.lookyloo.redis.srem('ongoing', uuid)
 
             lazy_cleanup = self.lookyloo.redis.pipeline()
             if queue and self.lookyloo.redis.zscore('queues', queue):
                 lazy_cleanup.zincrby('queues', -1, queue)
             lazy_cleanup.zrem('to_capture', uuid)
-            lazy_cleanup.srem('ongoing', uuid)
             lazy_cleanup.delete(uuid)
             # make sure to expire the key if nothing was processed for a while (= queues empty)
             lazy_cleanup.expire('queues', 600)

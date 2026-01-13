@@ -8,10 +8,11 @@ from datetime import date
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from pypdns import PyPDNS, PDNSRecord
+from pypdns import PyPDNS, PDNSRecord, PDNSError, UnauthorizedError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from ..default import ConfigError, get_homedir
-from ..helpers import get_cache_directory
+from ..helpers import get_cache_directory, get_useragent_for_requests, global_proxy_for_requests
 
 if TYPE_CHECKING:
     from ..capturecache import CaptureCache
@@ -26,13 +27,28 @@ class CIRCLPDNS(AbstractModule):
             self.logger.info('Missing credentials.')
             return False
 
-        self.pypdns = PyPDNS(basic_auth=(self.config['user'], self.config['password']))
+        self.pypdns = PyPDNS(basic_auth=(self.config['user'],
+                                         self.config['password']),
+                             useragent=get_useragent_for_requests(),
+                             proxies=global_proxy_for_requests(),
+                             # Disable active query because it should already have been done.
+                             disable_active_query=True)
 
         self.storage_dir_pypdns = get_homedir() / 'circl_pypdns'
         self.storage_dir_pypdns.mkdir(parents=True, exist_ok=True)
         return True
 
-    def get_passivedns(self, query: str) -> list[PDNSRecord] | None:
+    def _get_live_passivedns(self, query: str) -> list[PDNSRecord] | None:
+        # No cache, just get the records.
+        try:
+            return [entry for entry in self.pypdns.iter_query(query) if isinstance(entry, PDNSRecord)]
+        except RequestsTimeout:
+            self.logger.warning(f'CIRCL PDNS request timed out: {query}')
+            return None
+
+    def get_passivedns(self, query: str, live: bool=False) -> list[PDNSRecord] | None:
+        if live:
+            return self._get_live_passivedns(query)
         # The query can be IP or Hostname. For now, we only do it on domains.
         url_storage_dir = get_cache_directory(self.storage_dir_pypdns, query, 'pdns')
         if not url_storage_dir.exists():
@@ -49,19 +65,16 @@ class CIRCLPDNS(AbstractModule):
         '''Run the module on all the nodes up to the final redirect'''
         if error := super().capture_default_trigger(cache, force=force, auto_trigger=auto_trigger, as_admin=as_admin):
             return error
-
-        if cache.url.startswith('file'):
-            return {'error': 'CIRCL Passive DNS does not support files.'}
-
-        if cache.redirects:
-            hostname = urlparse(cache.redirects[-1]).hostname
-        else:
-            hostname = urlparse(cache.url).hostname
-
-        if not hostname:
-            return {'error': 'No hostname found.'}
-
-        self.__pdns_lookup(hostname, force)
+        alreay_done = set()
+        for redirect in cache.redirects:
+            parsed = urlparse(redirect)
+            if parsed.scheme not in ['http', 'https']:
+                continue
+            if hostname := urlparse(redirect).hostname:
+                if hostname in alreay_done:
+                    continue
+                self.__pdns_lookup(hostname, force)
+                alreay_done.add(hostname)
         return {'success': 'Module triggered'}
 
     def __pdns_lookup(self, hostname: str, force: bool=False) -> None:
@@ -78,7 +91,14 @@ class CIRCLPDNS(AbstractModule):
         if not force and pypdns_file.exists():
             return
 
-        pdns_info = [entry for entry in self.pypdns.iter_query(hostname)]
+        try:
+            pdns_info = [entry for entry in self.pypdns.iter_query(hostname)]
+        except UnauthorizedError:
+            self.logger.error('Invalid login/password.')
+            return
+        except PDNSError as e:
+            self.logger.error(f'Unexpected error: {e}')
+            return
         if not pdns_info:
             try:
                 url_storage_dir.rmdir()

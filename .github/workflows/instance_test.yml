@@ -2,9 +2,9 @@ name: Run local instance of lookyloo to test that current repo
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main", "develop" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main", "develop" ]
 
 jobs:
   splash-container:
@@ -13,13 +13,13 @@ jobs:
      strategy:
        fail-fast: false
        matrix:
-         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
      steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python ${{matrix.python-version}}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{matrix.python-version}}
 
@@ -27,7 +27,7 @@ jobs:
         run: pipx install poetry
 
       - name: Clone Valkey
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: valkey-io/valkey
           path: valkey-tmp
@@ -38,18 +38,21 @@ jobs:
           mv valkey-tmp ../valkey
           pushd ..
           pushd valkey
-          make
+          make -j $(nproc)
           popd
           popd
 
       - name: Install system deps
         run: |
           sudo apt install libfuzzy-dev libmagic1
-          # playwright required deps.
-          # sudo apt install libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxdamage1 libgbm1 libpango-1.0-0 libcairo2 libatspi2.0-0
+
+      - name: Install kvrocks from deb
+        run: |
+          wget https://github.com/Lookyloo/kvrocks-fpm/releases/download/v2.13.0/kvrocks_2.13-1_amd64.deb -O kvrocks.deb
+          sudo dpkg -i kvrocks.deb
 
       - name: Clone uwhoisd
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: Lookyloo/uwhoisd
           path: uwhoisd-tmp
@@ -66,24 +69,22 @@ jobs:
           popd
           popd
 
-
       - name: Install & run lookyloo
         run: |
           echo LOOKYLOO_HOME="'`pwd`'" > .env
-          cp config/generic.json.sample config/generic.json
-          cp config/modules.json.sample config/modules.json
           cp config/takedown_filters.ini.sample config/takedown_filters.ini
-          poetry install -vvv
+          poetry install
           poetry run playwright install-deps
           poetry run playwright install
-          poetry run tools/validate_config_files.py --check
-          poetry run tools/validate_config_files.py --update
-          poetry run tools/3rdparty.py
+          cp config/generic.json.sample config/generic.json
+          cp config/modules.json.sample config/modules.json
+          poetry run update --init
           jq '.UniversalWhois.enabled = true' config/modules.json > temp.json && mv temp.json config/modules.json
+          jq '.index_everything = true' config/generic.json > temp.json && mv temp.json config/generic.json
           poetry run start
 
       - name: Clone PyLookyloo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: Lookyloo/PyLookyloo
           path: PyLookyloo
@@ -95,6 +96,16 @@ jobs:
           poetry run python -m pytest tests/testing_github.py
           popd
 
+      - name: Check config files are valid
+        run: |
+          poetry run python tools/update_cloudflare_lists.py
+          poetry run python tools/validate_config_files.py --check
+
+      - name: Run playwright tests
+        run: |
+          poetry install --with dev
+          poetry run python -m pytest tests --tracing=retain-on-failure
+
       - name: Stop instance
         run: |
           poetry run stop
@@ -104,3 +115,9 @@ jobs:
         run: |
           find -wholename ./logs/*.log -exec cat {} \;
           find -wholename ./website/logs/*.log -exec cat {} \;
+
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-traces
+          path: test-results/

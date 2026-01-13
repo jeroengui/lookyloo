@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from .assemblyline import AssemblyLine # noqa
 from .fox import FOX  # noqa
 from .misp import MISPs, MISP  # noqa
 from .pi import PhishingInitiative  # noqa
@@ -10,12 +11,13 @@ from .vt import VirusTotal  # noqa
 from .pandora import Pandora  # noqa
 from .phishtank import Phishtank  # noqa
 from .hashlookup import HashlookupModule as Hashlookup  # noqa
-from .riskiq import RiskIQ, RiskIQError  # noqa
 from .urlhaus import URLhaus  # noqa
 from .cloudflare import Cloudflare  # noqa
 from .circlpdns import CIRCLPDNS  # noqa
+from .ail import AIL  # noqa
 
 __all__ = [
+    'AssemblyLine',
     'FOX',
     'MISPs',
     'MISP',
@@ -27,9 +29,8 @@ __all__ = [
     'Pandora',
     'Phishtank',
     'Hashlookup',
-    'RiskIQ',
-    'RiskIQError',
     'URLhaus',
     'Cloudflare',
-    'CIRCLPDNS'
+    'CIRCLPDNS',
+    'AIL'
 ]

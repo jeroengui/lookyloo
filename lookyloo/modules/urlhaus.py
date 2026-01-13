@@ -6,10 +6,9 @@ import json
 from datetime import date
 from typing import Any, TYPE_CHECKING
 
-import requests
 
 from ..default import ConfigError, get_homedir
-from ..helpers import get_cache_directory
+from ..helpers import get_cache_directory, prepare_global_session
 
 if TYPE_CHECKING:
     from ..capturecache import CaptureCache
@@ -24,7 +23,14 @@ class URLhaus(AbstractModule):
             self.logger.info('Not enabled')
             return False
 
+        if not self.config.get('apikey'):
+            self.logger.error('No API key provided')
+            return False
+
         self.url = self.config.get('url')
+
+        self.session = prepare_global_session()
+        self.session.headers.update({'Auth-Key': self.config['apikey']})
         self.storage_dir_uh = get_homedir() / 'urlhaus'
         self.storage_dir_uh.mkdir(parents=True, exist_ok=True)
         return True
@@ -42,7 +48,7 @@ class URLhaus(AbstractModule):
 
     def __url_result(self, url: str) -> dict[str, Any]:
         data = {'url': url}
-        response = requests.post(f'{self.url}/url/', data)
+        response = self.session.post(f'{self.url}/url/', data)
         response.raise_for_status()
         return response.json()
 

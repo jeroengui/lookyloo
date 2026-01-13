@@ -10,6 +10,7 @@ from redis import Redis
 
 from lookyloo import Indexing
 from lookyloo.default import AbstractManager, get_config, get_socket_path
+from lookyloo.helpers import remove_pickle_tree
 
 
 logging.config.dictConfig(get_config('logging'))
@@ -19,7 +20,6 @@ class BackgroundIndexer(AbstractManager):
 
     def __init__(self, full: bool=False, loglevel: int | None=None):
         super().__init__(loglevel)
-        self.is_public_instance = get_config('generic', 'public_instance')
         self.full_indexer = full
         self.indexing = Indexing(full_index=self.full_indexer)
         if self.full_indexer:
@@ -41,15 +41,24 @@ class BackgroundIndexer(AbstractManager):
         self.logger.info(f'Check {self.script_name}...')
         # NOTE: only get the non-archived captures for now.
         __counter_shutdown = 0
+        __counter_shutdown_force = 0
         for uuid, d in self.redis.hscan_iter('lookup_dirs'):
-            if not self.full_indexer:
+            __counter_shutdown_force += 1
+            if __counter_shutdown_force % 10000 == 0 and self.shutdown_requested():
+                self.logger.warning('Shutdown requested, breaking.')
+                break
+
+            if not self.full_indexer and self.redis.hexists(d, 'no_index'):
                 # If we're not running the full indexer, check if the capture should be indexed.
-                if self.is_public_instance and self.redis.hexists(d, 'no_index'):
-                    # Capture unindexed
-                    continue
-            __counter_shutdown += 1
-            self.indexing.index_capture(uuid, Path(d))
-            if __counter_shutdown % 10 and self.shutdown_requested():
+                continue
+            path = Path(d)
+            try:
+                if self.indexing.index_capture(uuid, path):
+                    __counter_shutdown += 1
+            except Exception as e:
+                self.logger.warning(f'Error while indexing {uuid}: {e}')
+                remove_pickle_tree(path)
+            if __counter_shutdown % 100 == 0 and self.shutdown_requested():
                 self.logger.warning('Shutdown requested, breaking.')
                 break
         else:

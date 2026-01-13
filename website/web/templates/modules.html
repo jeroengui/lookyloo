@@ -1,6 +1,7 @@
-{% from "macros.html" import shorten_string %}
-
 <div>
+{% if nothing_found %}
+    Nothing found on any of the modules.
+{% else %}
 {% if urlscan %}
   <hr>
   <center>
@@ -32,7 +33,7 @@
     <p class="lead">Phishtank flagged the URLs below as phishing</p>
     <dl class="row">
     {% for url, permaurl in phishtank['urls'].items() %}
-    <dt class="col-sm-7">{{ shorten_string(url, 150) }}</dt>
+    <dt class="col-sm-7">{{ shorten_string(url) }}</dt>
     <dd class="col-sm-3"><a href="{{ permaurl }}">View on phishtank</a></li></dd>
     {% endfor %}
     </dl>
@@ -44,7 +45,7 @@
     <p>{{ ip }}</p>
     <dl class="row">
       {% for related_url, permaurl in entries %}
-      <dt class="col-sm-7">{{ shorten_string(related_url, 150) }}</dt>
+      <dt class="col-sm-7">{{ shorten_string(related_url) }}</dt>
       <dd class="col-sm-3"><a href="{{ permaurl }}">View on phishtank</a></li></dd>
       {% endfor %}
     </dl>
@@ -62,7 +63,7 @@
     <p class="lead">URL Haus knows the URLs below</p>
     <dl class="row">
     {% for entry in urlhaus['urls'] %}
-    <dt class="col-sm-7">{{ shorten_string(entry['url'], 150) }}</dt>
+    <dt class="col-sm-7">{{ shorten_string(entry['url']) }}</dt>
     <dd class="col-sm-3"><a href="{{ entry['urlhaus_reference'] }}">View on URL Haus</a></li></dd>
     {% endfor %}
     </dl>
@@ -77,7 +78,7 @@
       <div class="border-top my-3"></div>
       <center>
         <h3><small class="text-muted">URL</small>
-          {{ shorten_string(url, 50, with_title=True) }}
+          {{ shorten_string(url) }}
         </h3>
       </center>
       {% if entries['malicious'] %}
@@ -101,10 +102,11 @@
   {% for url, tag in pi.items() %}
     <center>
       <h3><small class="text-muted">URL</small>
-        {{ shorten_string(url, 50, with_title=True) }}
+        {{ shorten_string(url) }}
       </h3>
       <div>This URL is tagged as <b>{{ tag }}</b> on Phishing Initiative</div>
     </center>
   {% endfor %}
 {% endif%}
+{% endif %}
 </div>

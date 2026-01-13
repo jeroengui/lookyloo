@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import logging.config
 import shutil
@@ -10,11 +9,13 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import orjson
+
 from redis import Redis
 
 from lookyloo import Lookyloo
 from lookyloo.default import AbstractManager, get_config, get_socket_path
-from lookyloo.exceptions import MissingUUID, NoValidHarFile
+from lookyloo.exceptions import MissingUUID, NoValidHarFile, TreeNeedsRebuild
 from lookyloo.helpers import is_locked, get_sorted_captures_from_disk, make_dirs_list, get_captures_dir
 
 
@@ -40,12 +41,12 @@ class BackgroundBuildCaptures(AbstractManager):
             capture_uuid = f.read()
         self.logger.info(f'Triggering autoreport for {capture_uuid}...')
         settings = {}
-        with (path / 'auto_report').open() as f:
+        with (path / 'auto_report').open('rb') as f:
             if ar := f.read():
                 # could be an empty file.
-                settings = json.loads(ar)
+                settings = orjson.loads(ar)
         try:
-            self.lookyloo.send_mail(capture_uuid, email=settings.get('email', ''),
+            self.lookyloo.send_mail(capture_uuid, as_admin=True, email=settings.get('email', ''),
                                     comment=settings.get('comment'))
             (path / 'auto_report').unlink()
         except Exception as e:
@@ -57,6 +58,10 @@ class BackgroundBuildCaptures(AbstractManager):
         self._build_missing_pickles()
         # Don't need the cache in this class.
         self.lookyloo.clear_tree_cache()
+
+    def _wait_to_finish(self) -> None:
+        self.redis.close()
+        super()._wait_to_finish()
 
     def _build_missing_pickles(self) -> bool:
         self.logger.debug('Build missing pickles...')
@@ -70,14 +75,16 @@ class BackgroundBuildCaptures(AbstractManager):
         cut_time = (datetime.now() - archive_interval)
         for month_dir in make_dirs_list(self.captures_dir):
             __counter_shutdown = 0
+            __counter_shutdown_force = 0
             for capture_time, path in sorted(get_sorted_captures_from_disk(month_dir, cut_time=cut_time, keep_more_recent=True), reverse=True):
-                __counter_shutdown += 1
-                if __counter_shutdown % 10 and self.shutdown_requested():
+                __counter_shutdown_force += 1
+                if __counter_shutdown_force % 1000 == 0 and self.shutdown_requested():
                     self.logger.warning('Shutdown requested, breaking.')
                     return False
+
                 if ((path / 'tree.pickle.gz').exists() or (path / 'tree.pickle').exists()):
                     # We already have a pickle file
-                    self.logger.debug(f'{path} has a pickle.')
+                    # self.logger.debug(f'{path} has a pickle.')
                     if (path / 'auto_report').exists():
                         # the pickle was built somewhere else, trigger report.
                         self.__auto_report(path)
@@ -115,6 +122,7 @@ class BackgroundBuildCaptures(AbstractManager):
                             self.redis.hset('lookup_dirs', uuid, str(path))
 
                 try:
+                    __counter_shutdown += 1
                     self.logger.info(f'Build pickle for {uuid}: {path.name}')
                     ct = self.lookyloo.get_crawled_tree(uuid)
                     try:
@@ -136,6 +144,8 @@ class BackgroundBuildCaptures(AbstractManager):
                     self.logger.warning(f'Unable to find {uuid}. That should not happen.')
                 except NoValidHarFile as e:
                     self.logger.critical(f'There are no HAR files in the capture {uuid}: {path.name} - {e}')
+                except TreeNeedsRebuild as e:
+                    self.logger.critical(f'There are unusable HAR files in the capture {uuid}: {path.name} - {e}')
                 except FileNotFoundError:
                     self.logger.warning(f'Capture {uuid} disappeared during processing, probably archived.')
                 except Exception:
@@ -147,9 +157,15 @@ class BackgroundBuildCaptures(AbstractManager):
                     except FileNotFoundError as e:
                         self.logger.warning(f'Unable to move capture: {e}')
                         continue
+                if __counter_shutdown % 10 == 0 and self.shutdown_requested():
+                    self.logger.warning('Shutdown requested, breaking.')
+                    return False
                 if max_captures <= 0:
                     self.logger.info('Too many captures in the backlog, start from the beginning.')
                     return False
+            if self.shutdown_requested():
+                # just in case.
+                break
         if got_new_captures:
             self.logger.info('Finished building all missing pickles.')
             # Only return True if we built new pickles.

@@ -16,6 +16,9 @@
 {% endblock %}
 
 {% block content %}
+  {% if not_enabled %}
+  Categorization not enabled.
+  {% else %}
   <div class="table-responsive">
   <table id="table" class="table" style="width:96%">
     <thead>
@@ -28,7 +31,7 @@
       {% for category, freq in categories %}
       <tr>
         <td>
-          <a href="{{ url_for('index_category', category=category) }}">{{ category }}</a>
+          <a href="{{ url_for('index', category=category) }}">{{ category }}</a>
         </td>
         <td>{{ freq }}</td>
       </tr>
@@ -36,4 +39,5 @@
     </tbody>
   </table>
   </div>
+  {% endif %}
 {% endblock %}

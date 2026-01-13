@@ -15,7 +15,7 @@
     "hours": 0
   },
   "ignore_sri": false,
-  "async_capture_processes": 1,
+  "async_capture_processes": 3,
   "use_user_agents_users": false,
   "enable_default_blur_screenshot": false,
   "show_project_page": true,
@@ -29,6 +29,20 @@
     "enable": false,
     "url": ""
   },
+  "multiple_remote_lacus": {
+    "enable": false,
+    "default": "Lacus local",
+    "remote_lacus": [
+      {
+        "name": "Lacus local",
+        "url": "http://127.0.0.1:7100"
+      },
+      {
+        "name": "Other Lacus",
+        "url": "http://127.0.0.1:17100"
+      }
+    ]
+  },
   "monitoring": {
     "enable": false,
     "url": "http://127.0.0.1:5200"
@@ -36,6 +50,15 @@
   "tor_proxy": {
     "server": "socks5://127.0.0.1:9050"
   },
+  "i2p_proxy": {
+    "server": "http://127.0.0.1:4444"
+  },
+  "trusted_timestamp_settings": {
+    "url": "https://zeitstempel.dfn.de/",
+    "hashname": "sha512",
+    "enable_default": false
+  },
+  "force_trusted_timestamp": false,
   "global_proxy": {
     "enable": false,
     "server": "",
@@ -49,14 +72,20 @@
     "smtp_host": "localhost",
     "smtp_port": "25",
     "confirm_message": "Message the users need to confirm before they submit a notification.",
-    "defang_urls": true
+    "defang_urls": true,
+    "auto_filter_contact": false,
+    "deduplicate": {
+      "uuid": true,
+      "hostnames": false,
+      "interval_in_sec": 86400
+    }
   },
   "email_smtp_auth": {
-      "auth": false,
-      "smtp_user":"johndoe@myorg.local",
-      "smtp_pass":"password",
-      "smtp_use_starttls": true,
-      "verify_certificate": true
+    "auth": false,
+    "smtp_user": "johndoe@myorg.local",
+    "smtp_pass": "password",
+    "smtp_use_starttls": true,
+    "verify_certificate": true
   },
   "priority": {
     "sources": {
@@ -83,6 +112,8 @@
     }
   },
   "index_everything": false,
+  "kvrocks_index": false,
+  "allow_headed": false,
   "_notes": {
     "loglevel": "(lookyloo) Can be one of the value listed here: https://docs.python.org/3/library/logging.html#levels",
     "only_global_lookups": "Set it to True if your instance is publicly available so users aren't able to scan your internal network",
@@ -105,8 +136,12 @@
     "auto_trigger_modules": "Automatically trigger the modules when the tree is loaded and when the capture is cached",
     "enable_mail_notification": "Allow users to notify a pre-configured email address about a specific capture",
     "remote_lacus": "By default, lookyloo will do the capture locally. Enabling this feature means you have a dedicated Lacus instance somewhere",
+    "multiple_remote_lacus": "By default, lookyloo will do the capture locally. Enabling this feature means you have multiple dedicated Lacus instances somewhere",
     "monitoring": "Enable connection to a remote monitoring instance",
-    "tor_proxy": "URL to connect to a SOCKS 5 proxy for tor - If you capture via a lacus instance, this value is ignored",
+    "tor_proxy": "[Ignored if remote Lacus instance] URL to connect to a SOCKS 5 proxy for tor.",
+    "i2p_proxy": "[Ignored if remote Lacus instance] URL to connect to an HTTP proxy for i2p.",
+    "trusted_timestamp_settings": "[URL Ignored if remote Lacus instance] Settings to connect to a TimeStamp Authority.",
+    "force_trusted_timestamp": "[If enabled and/or supported in Lacus] Always trigger a call to get trusted timestamps for each capture.",
     "global_proxy": "Proxy configuration to use for *all* the requests (except .onions) - If you capture via a lacus instance, this value is ignored",
     "email": "Configuration for sending email notifications.",
     "email_smtp_auth": "Email SMTP auth configuration",
@@ -117,7 +152,9 @@
     "max_tree_create_time": "The max time the generation of a tree is allowed to take",
     "s3fs": "The config to access a S3FS instance with the s3fs python module - it is not integrated properly for now as it requires urllib < 2.0 which is a non-started at this stage.",
     "index_everything": "If true, index every capture, even if it's not public. This feature requires a dedicated kvrocks instance, and is only accessible when logged-in as admin.",
+    "kvrocks_index": "If true, use kvrocks instead of valkey for the public index. Requires kvrocks to be installed.",
     "ignore_sri": "If true, the sri values are ignored and not calculated so that there are no problems while developing and testing.",
-    "enable_takedown_form": "If true, a form for simplified takedown will be enabled."
+    "enable_takedown_form": "If true, a form for simplified takedown will be enabled.",
+    "allow_headed": "Allow users to use the headed version of the browser. It requires a graphical environment."
   }
 }

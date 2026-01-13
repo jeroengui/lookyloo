@@ -66,7 +66,6 @@ def load_configs(path_to_config_files: str | Path | None=None) -> None:
 @lru_cache(64)
 def get_config(config_type: str, entry: str | None=None, quiet: bool=False) -> Any:
     """Get an entry from the given config_type file. Automatic fallback to the sample file"""
-    global configs
     if not configs:
         load_configs()
     if config_type in configs:
@@ -98,9 +97,13 @@ def safe_create_dir(to_create: Path) -> None:
 
 def get_socket_path(name: str) -> str:
     mapping = {
-        'cache': Path('cache', 'cache.sock'),
-        'indexing': Path('indexing', 'indexing.sock')
+        'cache': Path('cache', 'cache.sock')
     }
+    if get_config('generic', 'kvrocks_index'):
+        mapping['indexing'] = Path('kvrocks_index', 'kvrocks_index.sock')
+    else:
+        mapping['indexing'] = Path('indexing', 'indexing.sock')
+
     if get_config('generic', 'index_everything'):
         mapping['full_index'] = Path('full_index', 'full_index.sock')
     return str(get_homedir() / mapping[name])

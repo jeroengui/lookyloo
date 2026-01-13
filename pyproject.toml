@@ -1,27 +1,29 @@
-[tool.poetry]
+[project]
 name = "lookyloo"
-version = "1.27.0"
+version = "1.36.0"
 description = "Web interface to track the trackers."
-authors = ["Raphaël Vinot <raphael.vinot@circl.lu>"]
+authors = [{name="Raphaël Vinot", email="raphael.vinot@circl.lu"}]
 license = "BSD-3-Clause"
 repository = "https://github.com/Lookyloo/lookyloo"
 homepage = "https://www.lookyloo.eu"
 documentation = "https://www.lookyloo.eu/docs/main/"
+requires-python = ">=3.10,<3.14"
 
 readme = "README.md"
 
+dynamic = [ "dependencies", "classifiers" ]
+
+[tool.poetry]
 classifiers = [
-    'License :: OSI Approved :: BSD License',
-    'Operating System :: POSIX :: Linux',
     'Intended Audience :: Science/Research',
     'Intended Audience :: Telecommunications Industry',
     'Intended Audience :: Information Technology',
-    'Programming Language :: Python :: 3',
     'Topic :: Security',
-    'Topic :: Internet',
+    'Topic :: Internet'
 ]
 
-[tool.poetry.scripts]
+
+[project.scripts]
 start = "bin.start:main"
 stop = "bin.stop:main"
 update = "bin.update:main"
@@ -35,78 +37,76 @@ archiver = "bin.archiver:main"
 processing = "bin.background_processing:main"
 start_website = "bin.start_website:main"
 scripts_controller = "bin.scripts_controller:main"
+mastobot = "bin.mastobot:main"
 
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.14"
-requests = "^2.32.3"
-flask = "^3.1.0"
+assemblyline_client = "^4.9.8"
+requests = "^2.32.5"
+flask = "^3.1.2"
 gunicorn = {version = "^23.0.0", extras = ["setproctitle"]}
-charset-normalizer = "^3.4.0"
-redis = {version = "^5.2.1", extras = ["hiredis"]}
-beautifulsoup4 = {version = "^4.12.3", extras = ["lxml", "charset_normalizer"]}
-bootstrap-flask = "^2.4.1"
+charset-normalizer = "^3.4.4"
+redis = {version = "^5.3.0,<6.0", extras = ["hiredis"]}
+beautifulsoup4 = {version = "^4.14.3", extras = ["lxml", "charset_normalizer"]}
+bootstrap-flask = "^2.5.0"
 defang = "^0.5.3"
-vt-py = "^0.19.0"
+vt-py = "^0.22.0"
 pyeupi = "^1.3.0"
-pysanejs = "^2.0.3"
-pylookyloo = "^1.26.1"
-dnspython = "^2.7.0"
-pytaxonomies = "^1.5.0"
-pymisp = {version = "^2.5.3", extras = ["url", "fileobjects"]}
-Pillow = "^11.0.0"
-flask-restx = "^1.3.0"
-rich = "^13.9.4"
-pyphishtanklookup = "^1.4.1"
-Flask-Cors = "^5.0.0"
-pyhashlookup = "^1.2.5"
-lief = "^0.15"
-ua-parser = {extras = ["regex"], version = "^1.0.0"}
+pysanejs = "^2.0.5"
+pylookyloo = "^1.34.0"
+dnspython = "^2.8.0"
+pytaxonomies = "^2.1.0"
+pymisp = {version = "^2.5.17.3", extras = ["fileobjects"]}
+Pillow = "^12.0.0"
+flask-restx = "^1.3.2"
+rich = "^14.2.0"
+pyphishtanklookup = "^1.5.1"
+Flask-Cors = "^6.0.2"
+pyhashlookup = "^1.2.8"
+lief = "^0.17.1"
+ua-parser = {extras = ["regex"], version = "^1.0.1"}
 Flask-Login = "^0.6.3"
-har2tree = "^1.27.6"
-passivetotal = "^2.5.9"
-werkzeug = "^3.1.3"
+har2tree = "^1.36.0"
+werkzeug = "^3.1.4"
 filetype = "^1.2.0"
-pypandora = "^1.9.1"
-lacuscore = "^1.12.6"
-pylacus = "^1.12.0"
-pyipasnhistory = "^2.1.3"
-publicsuffixlist = "^1.0.2.20241216"
+pypandora = "^1.11.0"
+lacuscore = "^1.21.0"
+pylacus = "^1.21.0"
+pyipasnhistory = "^2.1.5"
+publicsuffixlist = "^1.0.2.20251209"
 pyfaup = "^1.2"
 chardet = "^5.2.0"
-pysecuritytxt = "^1.3.2"
-pylookyloomonitoring = "^1.1.4"
-s3fs = "^2024.10.0"
-urllib3 = [
-    {version = "<2", python = "<3.10"},
-    {version = "^2.2.3", python = ">=3.10"}
-]
-pypdns = "^2.2.7"
-mmh3 = "^5.0.1"
-puremagic = "^1.28"
-psutil = "^6.1.0"
+pysecuritytxt = "^1.3.3"
+pylookyloomonitoring = "^1.2.0"
+s3fs = "^2025.12.0"
+urllib3 = "^2.6.2"
+pypdns = "^2.3.0"
+mmh3 = "^5.2.0"
+puremagic = "^1.30"
+psutil = "^7.1.3"
 flask-talisman = "^1.1.0"
 
-aiohttp = {extras = ["speedups"], version = "^3.11.10"}
+aiohttp = {extras = ["speedups"], version = "^3.13.2"}
+pyail = "^0.0.11"
+mastodon-py = "^2.1.4"
+typing-extensions = {version = "^4.15.0", python = "<3.12"}
+rfc3161-client = "^1.0.5"
+orjson = "^3.11.5"
 
 [tool.poetry.group.dev.dependencies]
-mypy = "^1.13.0"
-ipython = [
-    {version = "<8.19.0", python = "<3.10"},
-    {version = "^8.19.0", python = ">=3.10"}
-]
-types-requests = [
-    {version = "<2.32", python = "<3.10"},
-    {version = "^2.32", python = ">=3.10"}
-]
+mypy = "^1.19.1"
+pytest-playwright = "^0.7.2"
+types-requests = "^2.32.4.20250913"
 types-redis = {version = "^4.6.0.20241004"}
-types-Deprecated = "^1.2.15.20241117"
-types-python-dateutil = "^2.9.0.20241206"
-types-beautifulsoup4 = "^4.12.0.20241020"
+types-Deprecated = "^1.3.1.20251101"
+types-python-dateutil = "^2.9.0.20251115"
+types-beautifulsoup4 = "^4.12.0.20250516"
 types-Pillow = "^10.2.0.20240822"
-types-pytz = "^2024.2.0.20241003"
-types-psutil = "^6.1.0.20241102"
+types-pytz = "^2025.2.0.20251108"
+types-psutil = "^7.1.3.20251211"
+types-lxml = "^2025.11.25"
+gitpython = "^3.1.45"
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0"]
 build-backend = "poetry.core.masonry.api"

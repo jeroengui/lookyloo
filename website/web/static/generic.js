@@ -40,6 +40,9 @@ function downloadBase64File(contentType, base64Data, fileName) {
 }
 
 function render_datetime_with_tz(data) {
+    if(! isNaN(data)){
+        data = parseInt(data);
+    }
     const date = new Date(data);
     return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")} ${date.toTimeString()}`;
 };
@@ -72,15 +75,65 @@ function downloadFaviconListener() {
   }))
 };
 
+function submitPandoraListener() {
+  document.querySelectorAll('.submitPandoraButton').forEach(
+      el => el.addEventListener('click', event => {
+        submit_pandora(el.dataset.hostnode, el.dataset.hash, el.dataset.indexinzip, el.dataset.pandorasubmit);
+  }));
+};
+
+function submit_pandora(node_uuid, ressource_hash, index_in_zip, pandora_submit_url){
+  let data = {};
+  if (node_uuid) {
+      data.node_uuid = node_uuid;
+  };
+  if (ressource_hash) {
+      data.ressource_hash = ressource_hash;
+  };
+  if (index_in_zip) {
+      data.index_in_zip = index_in_zip;
+  };
+  fetch(pandora_submit_url, {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(data.link);
+      }
+      openURLInNewTab(data.link);
+    })
+    .catch((error) => {
+        throw new Error(error);
+    });
+};
+
 document.addEventListener("DOMContentLoaded", () => {
+
+  // trigger all the BS tooltips
+  const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+  const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
 
   document.querySelectorAll('.goBack').forEach(el => el.addEventListener('click', event => {
     window.history.back();
   }));
 
-  newTabClickListener();
-
   document.querySelectorAll(".locateInTree").forEach(el => el.addEventListener('click', event => {
     window.opener.LocateNode(el.dataset.hostnode);
   }));
+
+  document.querySelectorAll('.js-copy').forEach(
+      el => el.addEventListener('click', event => {
+        navigator.clipboard.writeText(el.dataset.copy).then(function() {
+            el.setAttribute('data-bs-original-title', 'Copying to clipboard was successful!');
+        }, function(err) {
+            el.setAttribute('data-bs-original-title', 'Could not copy text: ' + err);
+        });
+      })
+  );
+
+  submitPandoraListener();
+  newTabClickListener();
+  renderTables();
 });

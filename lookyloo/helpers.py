@@ -23,11 +23,13 @@ from pydantic import field_validator
 from pydantic_core import from_json
 from string import punctuation
 from typing import Any, TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
+import requests
 
 from har2tree import CrawledTree, HostNode, URLNode
 from lacuscore import CaptureSettings as LacuscoreCaptureSettings
+from PIL import Image
 from playwrightcapture import get_devices
 from publicsuffixlist import PublicSuffixList  # type: ignore[import-untyped]
 from pytaxonomies import Taxonomies  # type: ignore[attr-defined]
@@ -42,6 +44,30 @@ if TYPE_CHECKING:
     from .indexing import Indexing
 
 logger = logging.getLogger('Lookyloo - Helpers')
+
+
+def global_proxy_for_requests() -> dict[str, str]:
+    if global_proxy := get_config('generic', 'global_proxy'):
+        if global_proxy.get('enable'):
+            if not global_proxy.get('server'):
+                raise LookylooException('Global proxy is enabled, but no server is set.')
+            parsed_url = urlparse(global_proxy['server'])
+            if global_proxy.get('username') and global_proxy.get('password'):
+                parsed_url['username'] = global_proxy['username']
+                parsed_url['password'] = global_proxy['password']
+            return {
+                'http': urlunparse(parsed_url),
+                'https': urlunparse(parsed_url)
+            }
+    return {}
+
+
+def prepare_global_session() -> requests.Session:
+    session = requests.Session()
+    session.headers['user-agent'] = get_useragent_for_requests()
+    if proxies := global_proxy_for_requests():
+        session.proxies.update(proxies)
+    return session
 
 
 # This method is used in json.dump or json.dumps calls as the default parameter:
@@ -93,6 +119,18 @@ def get_email_template() -> str:
 
 
 @lru_cache
+def get_tt_template() -> str:
+    with (get_homedir() / 'config' / 'tt_readme.tmpl').open() as f:
+        return f.read()
+
+
+@lru_cache
+def get_error_screenshot() -> Image.Image:
+    error_img: Path = get_homedir() / 'website' / 'web' / 'static' / 'error_screenshot.png'
+    return Image.open(error_img)
+
+
+# NOTE: do not cache that, otherwise we need to restart the webserver when changing the file.
 def load_takedown_filters() -> tuple[re.Pattern[str], re.Pattern[str], dict[str, list[str]]]:
     filter_ini_file = get_homedir() / 'config' / 'takedown_filters.ini'
     if not filter_ini_file.exists():
@@ -174,16 +212,23 @@ class UserAgents:
     def __init__(self) -> None:
         if get_config('generic', 'use_user_agents_users'):
             self.path = get_homedir() / 'own_user_agents'
+            if not list(self.path.glob('**/*.json')):
+                # If the user agents directory containing the users agents gathered by lookyloo is empty, we use the default one.
+                logger.warning(f'No user agents found in {self.path}, using default list.')
+                self.path = get_homedir() / 'user_agents'
         else:
             self.path = get_homedir() / 'user_agents'
 
-        ua_files_path = sorted(self.path.glob('**/*.json'), reverse=True)
         # This call *must* be here because otherwise, we get the devices from within the async
         # process and as we already have a playwright context, it fails.
         # it is not a problem to have it here because the devices do not change
         # until we have a new version playwright, and restart everything anyway.
         self.playwright_devices = get_devices()
-        self._load_newest_ua_file(ua_files_path[0])
+
+        if ua_files_path := sorted(self.path.glob('**/*.json'), reverse=True):
+            self._load_newest_ua_file(ua_files_path[0])
+        else:
+            self._load_playwright_devices()
 
     def _load_newest_ua_file(self, path: Path) -> None:
         self.most_recent_ua_path = path
@@ -215,9 +260,19 @@ class UserAgents:
 
     @property
     def user_agents(self) -> dict[str, dict[str, list[str]]]:
-        ua_files_path = sorted(self.path.glob('**/*.json'), reverse=True)
-        if ua_files_path[0] != self.most_recent_ua_path:
-            self._load_newest_ua_file(ua_files_path[0])
+        # Try to get todays file. only use glob if it doesn't exist.
+        today = date.today()
+        today_file = self.path / str(today.year) / f"{today.month:02}" / f'{today.year}-{today.month:02}-{today.day}.json'
+        yesterday_file = self.path / str(today.year) / f"{today.month:02}" / f'{today.year}-{today.month:02}-{today.day - 1}.json'
+        if today_file.exists():
+            to_check = today_file
+        elif yesterday_file.exists():
+            to_check = yesterday_file
+        else:
+            to_check = sorted(self.path.glob('**/*.json'), reverse=True)[0]
+
+        if to_check != self.most_recent_ua_path:
+            self._load_newest_ua_file(to_check)
         return self.most_recent_uas
 
     @property
@@ -414,6 +469,7 @@ class CaptureSettings(LacuscoreCaptureSettings):
     browser_name: str | None = None
     os: str | None = None
     parent: str | None = None
+    remote_lacus_name: str | None = None
 
     @field_validator('auto_report', mode='before')
     @classmethod
@@ -489,11 +545,15 @@ def load_pickle_tree(capture_dir: Path, last_mod_time: int, logger: Logger) -> C
                 with pickle_path.open('rb') as _p:
                     tree = pickle.load(_p)
     except pickle.UnpicklingError:
+        logger.warning(f'Unpickling error, removing the pickle in {capture_dir}.')
         remove_pickle_tree(capture_dir)
     except EOFError:
+        logger.warning(f'EOFError, removing the pickle in {capture_dir}.')
         remove_pickle_tree(capture_dir)
-    except Exception:
-        logger.exception('Unexpected exception when unpickling.')
+    except FileNotFoundError as e:
+        logger.info(f'File not found: {e}')
+    except Exception as e:
+        logger.exception(f'Unexpected exception when unpickling: {e}')
         remove_pickle_tree(capture_dir)
 
     if tree:

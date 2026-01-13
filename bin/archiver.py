@@ -53,10 +53,12 @@ class Archiver(AbstractManager):
                                                  config_kwargs={'connect_timeout': 10,
                                                                 'read_timeout': 900})
             self.s3fs_bucket = s3fs_config['config']['bucket_name']
-            self.s3fs_client.clear_multipart_uploads(self.s3fs_bucket)
 
     def _to_run_forever(self) -> None:
         archiving_done = False
+        if self.archive_on_s3fs:
+            self.s3fs_client.clear_instance_cache()
+            self.s3fs_client.clear_multipart_uploads(self.s3fs_bucket)
         # NOTE: When we archive a big directory, moving *a lot* of files, expecially to MinIO
         # can take a very long time. In order to avoid being stuck on the archiving, we break that in chunks
         # but we also want to keep archiving without waiting 1h between each run.
@@ -119,6 +121,10 @@ class Archiver(AbstractManager):
                 if not self.s3fs_client.isdir(entry):
                     # index
                     continue
+                if self.shutdown_requested():
+                    # agressive shutdown.
+                    self.logger.warning('Shutdown requested during S3 directory listing, breaking.')
+                    return None
                 dir_on_disk = root_dir / entry.rsplit('/', 1)[-1]
                 if dir_on_disk.name.isdigit():
                     if self._update_index(dir_on_disk, s3fs_parent_dir=s3fs_dir):
@@ -128,9 +134,6 @@ class Archiver(AbstractManager):
                             rewrite_index = True
                             current_sub_index.add(dir_on_disk.name)
                             self.logger.info(f'Adding sub index {dir_on_disk.name} to {index_file}')
-                            if self.shutdown_requested():
-                                self.logger.warning('Shutdown requested, breaking.')
-                                break
                 else:
                     # got a capture
                     if len(self.s3fs_client.ls(entry, detail=False)) == 1:
@@ -167,6 +170,11 @@ class Archiver(AbstractManager):
                             new_captures.add(dir_on_disk)
                     current_dirs.add(dir_on_disk.name)
                     current_dirs.add(str(dir_on_disk))
+
+        if self.shutdown_requested():
+            # Do not try to write the index if a shutdown was requested: the lists may be incomplete.
+            self.logger.warning('Shutdown requested, breaking.')
+            return None
 
         # Check if all the directories in current_dirs (that we got by listing the directory)
         # are the same as the one in the index. If they're not, we pop the UUID before writing the index
@@ -281,6 +289,8 @@ class Archiver(AbstractManager):
                 if random.randrange(20) == 0:
                     self._update_index(directory_to_index,
                                        s3fs_parent_dir='/'.join([self.s3fs_bucket, year]))
+                    # They take a very long time, often more than one day, quitting after we got one
+                    break
             else:
                 self._update_index(directory_to_index)
         self.logger.info('Archived indexes updated')
@@ -324,20 +334,22 @@ class Archiver(AbstractManager):
 
         # Let's use the indexes instead of listing directories to find what we want to archive.
         capture_breakpoint = 300
+        __counter_shutdown_force = 0
         for u, p in self.redis.hscan_iter('lookup_dirs'):
-            uuid = u.decode()
-            path = p.decode()
+            __counter_shutdown_force += 1
+            if __counter_shutdown_force % 1000 == 0 and self.shutdown_requested():
+                self.logger.warning('Shutdown requested, breaking.')
+                archiving_done = False
+                break
+
             if capture_breakpoint <= 0:
                 # Break and restart later
                 self.logger.info('Archived many captures will keep going later.')
                 archiving_done = False
                 break
-            elif capture_breakpoint % 10:
-                # Just check if we requested a shutdown.
-                if self.shutdown_requested():
-                    self.logger.warning('Shutdown requested, breaking.')
-                    break
 
+            uuid = u.decode()
+            path = p.decode()
             capture_time_isoformat = os.path.basename(path)
             if not capture_time_isoformat:
                 continue

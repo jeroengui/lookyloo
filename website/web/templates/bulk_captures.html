@@ -1,7 +1,6 @@
 {% extends "main.html" %}
 
 {% from 'bootstrap5/utils.html' import render_messages %}
-{% from "macros.html" import shorten_string %}
 
 {% block title %}Captures{% endblock %}
 
@@ -23,16 +22,16 @@
         .then(response => response.json())
         .then(cs => {
           if ((cs.status_code == 0) || (cs.status_code == 2)) {
-            capture_status[i].innerHTML = "Capture ongoing, please wait...";
+            capture_status[i].textContent = "Capture ongoing, please wait...";
           }
           else if (cs.status_code == 1){
-            capture_status[i].innerHTML = "Capture done.";
+            capture_status[i].textContent = "Capture done.";
             if ('error' in cs ){
-                capture_error[i].innerHTML = cs.error;
+                capture_error[i].textContent = cs.error;
             }
           }
           else {
-            capture_status[i].innerHTML = "Unknown capture.";
+            capture_status[i].textContent = "Unknown capture.";
           };
           if (cs.status_code != 1) {
             keep_going = true;
@@ -69,7 +68,7 @@
       {% for uuid, captured_url in bulk_captures %}
       <tr>
         <td>
-          {{ shorten_string(captured_url, 50, with_title=True) }}
+          {{ shorten_string(captured_url) }}
         </td>
         <td><a href="{{ url_for('tree', tree_uuid=uuid) }}">Show capture</a></td>
         <td id="{{uuid}}" class="capture_status">Please wait...</td>
